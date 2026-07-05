@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import hmac
@@ -8,13 +8,14 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 
 def _utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _hash_password(password: str, salt: str | None = None):
+def _hash_password(password: str, salt: Optional[str] = None):
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return salt, digest.hex()
@@ -112,16 +113,13 @@ class SQLiteSessionStore:
                 user_id = cursor.lastrowid
         except sqlite3.IntegrityError as error:
             raise ValueError("该邮箱已注册。") from error
-
         return self.get_user_by_id(user_id)
 
     def authenticate_user(self, email: str, password: str):
         email = email.strip().lower()
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-        if row is None:
-            return None
-        if not _verify_password(password, row["password_salt"], row["password_hash"]):
+        if row is None or not _verify_password(password, row["password_salt"], row["password_hash"]):
             return None
         return self._public_user(row)
 
@@ -137,7 +135,7 @@ class SQLiteSessionStore:
             )
         return token
 
-    def get_user_by_token(self, token: str | None):
+    def get_user_by_token(self, token: Optional[str]):
         if not token:
             return None
         with self._connect() as connection:
@@ -186,10 +184,7 @@ class SQLiteSessionStore:
 
     def _load_json(self, table_name: str, user_id, default):
         with self._connect() as connection:
-            row = connection.execute(
-                f"SELECT payload FROM {table_name} WHERE user_id = ?",
-                (int(user_id),),
-            ).fetchone()
+            row = connection.execute(f"SELECT payload FROM {table_name} WHERE user_id = ?", (int(user_id),)).fetchone()
         if row is None:
             return default
         return json.loads(row["payload"])
@@ -209,12 +204,7 @@ class SQLiteSessionStore:
 
     @staticmethod
     def _public_user(row):
-        return {
-            "id": row["id"],
-            "username": row["username"],
-            "email": row["email"],
-            "created_at": row["created_at"],
-        }
+        return {"id": row["id"], "username": row["username"], "email": row["email"], "created_at": row["created_at"]}
 
 
 def create_session_store():

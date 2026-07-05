@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from typing import Optional
@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.rag import build_plan_knowledge_query, search_fitness_knowledge
 from backend.store import create_session_store
 from workout_tools import (
     clear_training_plan,
@@ -23,7 +24,7 @@ from workout_tools import (
 )
 
 
-app = FastAPI(title="AI Fitness Coach Agent", version="0.2.0")
+app = FastAPI(title="AI Fitness Coach Agent", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -85,6 +86,11 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=3, ge=1, le=8)
+
+
 def _token_from_header(authorization: Optional[str]):
     if not authorization:
         return None
@@ -122,6 +128,15 @@ def _save_all(user_id: int, messages=None, training_plan=None, profile=None, fee
             profile if profile is not None else store.get_profile(user_id),
             feedback_log if feedback_log is not None else store.get_feedback_log(user_id),
         )
+
+
+def _plan_knowledge(profile, payload):
+    query = build_plan_knowledge_query(
+        goal=payload.goal or profile.get("goal"),
+        experience_level=payload.experience_level or profile.get("experience_level"),
+        injury_notes=profile.get("injury_notes"),
+    )
+    return search_fitness_knowledge(query, top_k=3)["items"]
 
 
 @app.get("/api/health")
@@ -162,6 +177,12 @@ def me(current_user=Depends(get_current_user)):
 @app.get("/api/reference-data")
 def reference_data():
     return get_reference_data()
+
+
+@app.post("/api/knowledge/search")
+def knowledge_search(payload: KnowledgeSearchRequest, current_user=Depends(get_current_user)):
+    _ = current_user
+    return search_fitness_knowledge(payload.query, top_k=payload.top_k)
 
 
 @app.get("/api/profile")
@@ -225,6 +246,7 @@ def weekly_plan(payload: PlanRequest, current_user=Depends(get_current_user)):
         profile=profile,
         plan=plan,
     )
+    result["knowledge_sources"] = _plan_knowledge(profile, payload)
     _save_all(current_user["id"], training_plan=plan)
     return result
 
@@ -242,6 +264,7 @@ def monthly_plan(payload: PlanRequest, current_user=Depends(get_current_user)):
         profile=profile,
         plan=plan,
     )
+    result["knowledge_sources"] = _plan_knowledge(profile, payload)
     _save_all(current_user["id"], training_plan=plan)
     return result
 
@@ -275,6 +298,8 @@ def save_feedback(payload: FeedbackRequest, current_user=Depends(get_current_use
         plan=plan,
         feedback_log=feedback_log,
     )
+    if payload.pain_parts or payload.soreness_parts or payload.sleep_quality in {"差", "很差"}:
+        result["knowledge_sources"] = search_fitness_knowledge("疼痛 酸痛 睡眠 恢复 训练安全", top_k=3)["items"]
     _save_all(current_user["id"], training_plan=plan, feedback_log=feedback_log)
     return result
 
@@ -283,7 +308,7 @@ def save_feedback(payload: FeedbackRequest, current_user=Depends(get_current_use
 def chat(payload: ChatRequest, current_user=Depends(get_current_user)):
     if not os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY"):
         return {
-            "reply": "还没有配置模型 API Key。你仍然可以使用画像、动作库、计划生成和反馈调整这些本地功能。",
+            "reply": "还没有配置模型 API Key。你仍然可以使用画像、知识库检索、动作库、计划生成和反馈调整这些本地功能。",
             "tool_calls": [],
         }
 
@@ -303,13 +328,7 @@ def chat(payload: ChatRequest, current_user=Depends(get_current_user)):
             feedback_log=feedback_log,
         )
     except Exception as error:
-        return {
-            "reply": f"模型调用失败：{type(error).__name__}: {error}",
-            "tool_calls": [],
-        }
+        return {"reply": f"模型调用失败：{type(error).__name__}: {error}", "tool_calls": []}
 
     _save_all(current_user["id"], messages=messages, training_plan=plan, profile=profile, feedback_log=feedback_log)
-    return {
-        "reply": result["reply"],
-        "tool_calls": result["tool_calls"],
-    }
+    return {"reply": result["reply"], "tool_calls": result["tool_calls"]}

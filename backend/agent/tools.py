@@ -1,5 +1,6 @@
-import json
+﻿import json
 
+from backend.rag import search_fitness_knowledge
 from workout_tools import (
     clear_training_plan,
     generate_monthly_plan,
@@ -16,6 +17,21 @@ from workout_tools import (
 
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_fitness_knowledge",
+            "description": "检索本地健身知识库，用于回答训练原则、动作安全、恢复、增肌、减脂、心肺和风险提示问题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "top_k": {"type": "integer", "description": "返回条数，默认 3"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -170,6 +186,7 @@ TOOLS = [
 
 
 TOOL_HANDLERS = {
+    "search_fitness_knowledge": search_fitness_knowledge,
     "get_reference_data": get_reference_data,
     "update_profile": update_profile,
     "get_profile": get_profile,
@@ -189,43 +206,30 @@ PLAN_TOOL_NAMES = {"generate_weekly_plan", "generate_monthly_plan", "get_trainin
 
 def execute_tool(tool_name, tool_input, plan=None, profile=None, feedback_log=None, **_legacy_kwargs):
     handler = TOOL_HANDLERS.get(tool_name)
-
     if handler is None:
-        return {
-            "success": False,
-            "message": f"未知工具：{tool_name}",
-        }
+        return {"success": False, "message": f"未知工具：{tool_name}"}
 
     try:
         if tool_name in PROFILE_TOOL_NAMES:
             return handler(**tool_input, profile=profile)
-
         if tool_name in PLAN_TOOL_NAMES:
             if tool_name in {"generate_weekly_plan", "generate_monthly_plan"}:
                 return handler(**tool_input, profile=profile, plan=plan)
             return handler(**tool_input, plan=plan)
-
         if tool_name == "log_workout_feedback":
             return handler(**tool_input, plan=plan, feedback_log=feedback_log)
-
         if tool_name == "get_feedback_summary":
             return handler(**tool_input, feedback_log=feedback_log)
-
         if tool_name == "get_exercise_library" and profile is not None and not tool_input.get("equipment"):
             return handler(**tool_input, profile=profile)
-
         return handler(**tool_input)
     except Exception as error:
-        return {
-            "success": False,
-            "message": str(error),
-        }
+        return {"success": False, "message": str(error)}
 
 
 def parse_tool_arguments(arguments):
     if not arguments:
         return {}
-
     try:
         return json.loads(arguments)
     except json.JSONDecodeError:
